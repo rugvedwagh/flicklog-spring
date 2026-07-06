@@ -1,0 +1,42 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - flicklog-mongo-data:/data/db
+    networks:
+      - flicklog-network
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - flicklog-network
+
+  app:
+    build: .
+    container_name: server
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongo
+      - redis
+    env_file:
+      - .env
+    environment:
+      DB_URL: mongodb://mongo:27017/flicklog
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - flicklog-network
+
+volumes:
+  flicklog-mongo-data:
+
+networks:
+  flicklog-network:
+    driver: bridge

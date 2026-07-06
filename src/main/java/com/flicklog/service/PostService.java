@@ -1,0 +1,284 @@
+package com.flicklog.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.flicklog.dto.request.PostRequest;
+import com.flicklog.dto.response.PostsPageResponse;
+import com.flicklog.exception.ApiException;
+import com.flicklog.model.ImageData;
+import com.flicklog.model.Post;
+import com.flicklog.model.User;
+import com.flicklog.repository.PostRepository;
+import com.flicklog.repository.UserRepository;
+import org.bson.types.ObjectId;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+
+/**
+ * Mirrors controllers/post.controllers.js.
+ */
+@Service
+public class PostService {
+
+    private static final int LIMIT = 6;
+
+    private final PostRepository postRepository;
+    private final UserRepository userRepository;
+    private final RedisCacheService redisCacheService;
+    private final CloudinaryService cloudinaryService;
+    private final ObjectMapper objectMapper;
+
+    public PostService(PostRepository postRepository, UserRepository userRepository,
+                        RedisCacheService redisCacheService, CloudinaryService cloudinaryService,
+                        ObjectMapper objectMapper) {
+        this.postRepository = postRepository;
+        this.userRepository = userRepository;
+        this.redisCacheService = redisCacheService;
+        this.cloudinaryService = cloudinaryService;
+        this.objectMapper = objectMapper;
+    }
+
+    public Post fetchPost(String slugId) {
+        // Mirrors slugId.split(/-(?=[^ -]+$)/) - split on the LAST hyphen only
+        int lastHyphen = slugId.lastIndexOf('-');
+        String id = lastHyphen == -1 ? slugId : slugId.substring(lastHyphen + 1);
+
+        if (!ObjectId.isValid(id)) {
+            throw new ApiException("Invalid post ID", 400);
+        }
+
+        String cacheKey = "post:" + slugId;
+        String cached = redisCacheService.get(cacheKey);
+        if (cached != null) {
+            Post cachedPost = readCachedPost(cached);
+            if (cachedPost != null) {
+                return cachedPost;
+            }
+        }
+
+        Post post = postRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Post not found", 404));
+
+        cachePost(cacheKey, post);
+        return post;
+    }
+
+    public PostsPageResponse fetchPosts(int pageNumber) {
+        String cacheKey = "posts:page:" + pageNumber;
+        String cached = redisCacheService.get(cacheKey);
+        if (cached != null) {
+            try {
+                return objectMapper.readValue(cached, PostsPageResponse.class);
+            } catch (Exception ignored) {
+                // fall through to a fresh DB read
+            }
+        }
+
+        int startIndex = (pageNumber - 1) * LIMIT;
+        long total = postRepository.count();
+        List<Post> posts = postRepository.findAllByOrderByIdDesc(
+                PageRequest.of(startIndex / LIMIT, LIMIT, Sort.by(Sort.Direction.DESC, "id")));
+
+        if (posts.isEmpty()) {
+            throw new ApiException("No posts found", 404);
+        }
+
+        PostsPageResponse response = new PostsPageResponse(
+                posts, pageNumber, (int) Math.ceil((double) total / LIMIT));
+
+        try {
+            redisCacheService.set(cacheKey, objectMapper.writeValueAsString(response));
+        } catch (Exception ignored) {
+            // caching is best-effort here, matching the original's fire-and-forget setex
+        }
+
+        return response;
+    }
+
+    public List<Post> fetchPostsBySearch(String searchQuery, String tags) {
+        String cacheKey = "posts:search:" + (searchQuery == null ? "" : searchQuery) + ":tags:" + (tags == null ? "" : tags);
+        String cached = redisCacheService.get(cacheKey);
+        if (cached != null) {
+            try {
+                return List.of(objectMapper.readValue(cached, Post[].class));
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+
+        List<String> tagsArray = (tags == null || tags.isBlank())
+                ? List.of()
+                : Arrays.stream(tags.split(",")).map(String::trim).toList();
+
+        List<Post> posts = postRepository.searchByTitleOrTags(searchQuery == null ? "" : searchQuery, tagsArray);
+
+        if (posts.isEmpty()) {
+            throw new ApiException(
+                    "No posts found with tags): [" + String.join(", ", tagsArray) + "] or title matching: " + searchQuery,
+                    404);
+        }
+
+        try {
+            redisCacheService.set(cacheKey, objectMapper.writeValueAsString(posts));
+        } catch (Exception ignored) {
+        }
+
+        return posts;
+    }
+
+    public Post createPost(PostRequest request, MultipartFile file, String creatorId) {
+        Post post = new Post();
+        post.setTitle(request.getTitle());
+        post.setMessage(request.getMessage());
+        post.setName(request.getName());
+        post.setCreator(creatorId);
+        post.setTags(request.getTags() != null
+                ? Arrays.stream(request.getTags().split(",")).map(String::trim).toList()
+                : List.of());
+        post.setSlug(request.getSlug());
+        post.setCreatedAt(Instant.now());
+
+        if (file != null && !file.isEmpty()) {
+            ImageData imageData = uploadImage(file);
+            post.setImage(imageData);
+            post.setSelectedfile(imageData.getUrl());
+        } else {
+            post.setSelectedfile("");
+        }
+
+        Post saved = postRepository.save(post);
+        redisCacheService.deleteByPattern("posts:*");
+        return saved;
+    }
+
+    public Post updatePost(String id, PostRequest request, MultipartFile file) {
+        if (!ObjectId.isValid(id)) {
+            throw new ApiException("Invalid post ID", 400);
+        }
+
+        Post existing = postRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Post not found", 404));
+
+        existing.setTitle(request.getTitle());
+        existing.setMessage(request.getMessage());
+        existing.setTags(request.getTags() != null
+                ? Arrays.stream(request.getTags().split(",")).map(String::trim).toList()
+                : existing.getTags());
+        existing.setSlug(request.getSlug());
+
+        if (file != null && !file.isEmpty()) {
+            if (existing.getImage() != null && existing.getImage().getPublicId() != null) {
+                cloudinaryService.destroy(existing.getImage().getPublicId());
+            }
+            ImageData imageData = uploadImage(file);
+            existing.setImage(imageData);
+            existing.setSelectedfile(imageData.getUrl());
+        }
+
+        Post updated = postRepository.save(existing);
+
+        redisCacheService.delete("post:" + id);
+        redisCacheService.deleteByPattern("posts:*");
+
+        return updated;
+    }
+
+    public void deletePost(String id) {
+        if (!ObjectId.isValid(id)) {
+            throw new ApiException("Invalid post ID", 400);
+        }
+
+        Post post = postRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Post not found", 404));
+
+        if (post.getImage() != null && post.getImage().getPublicId() != null) {
+            cloudinaryService.destroy(post.getImage().getPublicId());
+        }
+
+        postRepository.deleteById(id);
+
+        redisCacheService.delete("post:" + id);
+        redisCacheService.deleteByPattern("posts:*");
+    }
+
+    public Post likePost(String id, String userId) {
+        if (userId == null) {
+            throw new ApiException("Unauthenticated", 401);
+        }
+        if (!ObjectId.isValid(id)) {
+            throw new ApiException("Invalid post ID", 400);
+        }
+
+        Post post = postRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Post not found", 404));
+
+        if (post.getLikes().contains(userId)) {
+            post.setLikes(new java.util.ArrayList<>(post.getLikes().stream().filter(u -> !u.equals(userId)).toList()));
+        } else {
+            post.getLikes().add(userId);
+        }
+
+        return postRepository.save(post);
+    }
+
+    public Post commentPost(String id, String value) {
+        if (value == null || value.isBlank()) {
+            throw new ApiException("Comment cannot be empty", 400);
+        }
+        if (!ObjectId.isValid(id)) {
+            throw new ApiException("Invalid post ID", 400);
+        }
+
+        Post post = postRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Post not found", 404));
+
+        post.getComments().add(value);
+
+        redisCacheService.delete("post:" + id);
+
+        return postRepository.save(post);
+    }
+
+    public List<String> bookmarkPost(String postId, String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ApiException("User not found", 404));
+
+        if (user.getBookmarks().contains(postId)) {
+            user.setBookmarks(new java.util.ArrayList<>(user.getBookmarks().stream().filter(id -> !id.equals(postId)).toList()));
+        } else {
+            user.getBookmarks().add(postId);
+        }
+
+        userRepository.save(user);
+        return user.getBookmarks();
+    }
+
+    private ImageData uploadImage(MultipartFile file) {
+        try {
+            return cloudinaryService.upload(file);
+        } catch (Exception e) {
+            throw new ApiException("Image upload failed: " + e.getMessage(), 500);
+        }
+    }
+
+    private void cachePost(String cacheKey, Post post) {
+        try {
+            redisCacheService.set(cacheKey, objectMapper.writeValueAsString(post));
+        } catch (Exception ignored) {
+            // best-effort, matching the original's fire-and-forget setex
+        }
+    }
+
+    private Post readCachedPost(String cached) {
+        try {
+            return objectMapper.readValue(cached, Post.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}
