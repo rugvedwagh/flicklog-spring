@@ -7,6 +7,7 @@ import com.flicklog.dto.response.PostsPageResponse;
 import com.flicklog.model.Post;
 import com.flicklog.service.PostService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -28,7 +29,7 @@ public class PostController {
 
     @GetMapping("/search")
     public Map<String, List<Post>> fetchPostsBySearch(@RequestParam(defaultValue = "") String searchQuery,
-                                                        @RequestParam(defaultValue = "") String tags) {
+                                                      @RequestParam(defaultValue = "") String tags) {
         return Map.of("data", postService.fetchPostsBySearch(searchQuery, tags));
     }
 
@@ -43,16 +44,16 @@ public class PostController {
     }
 
     @PostMapping(consumes = "multipart/form-data")
-    public Post createPost(@ModelAttribute PostRequest request,
-                            @RequestParam(value = "selectedfile", required = false) MultipartFile file,
-                            HttpServletRequest httpRequest) {
+    public Post createPost(@Valid @ModelAttribute PostRequest request,
+                           @RequestParam(value = "selectedfile", required = false) MultipartFile file,
+                           HttpServletRequest httpRequest) {
         String creatorId = (String) httpRequest.getAttribute("userId");
         return postService.createPost(request, file, creatorId);
     }
 
     @PatchMapping(value = "/{id}", consumes = "multipart/form-data")
-    public Post updatePost(@PathVariable String id, @ModelAttribute PostRequest request,
-                            @RequestParam(value = "selectedfile", required = false) MultipartFile file) {
+    public Post updatePost(@PathVariable String id, @Valid @ModelAttribute PostRequest request,
+                           @RequestParam(value = "selectedfile", required = false) MultipartFile file) {
         return postService.updatePost(id, request, file);
     }
 
@@ -69,12 +70,12 @@ public class PostController {
     }
 
     @PostMapping("/{id}/commentPost")
-    public Post commentPost(@PathVariable String id, @RequestBody CommentRequest request) {
+    public Post commentPost(@PathVariable String id, @Valid @RequestBody CommentRequest request) {
         return postService.commentPost(id, request.getValue());
     }
 
     @PostMapping("/bookmarks/add")
-    public Map<String, List<String>> bookmarkPost(@RequestBody BookmarkRequest request) {
+    public Map<String, List<String>> bookmarkPost(@Valid @RequestBody BookmarkRequest request) {
         return Map.of("updatedBookmarks", postService.bookmarkPost(request.getPostId(), request.getUserId()));
     }
 }

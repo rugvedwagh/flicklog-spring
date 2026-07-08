@@ -5,6 +5,7 @@ import com.flicklog.security.JwtAuthFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -30,13 +31,12 @@ import java.util.Map;
 @EnableWebSecurity
 public class SecurityConfig {
 
-    @Value("${app.cors.allowed-origin}")
-    private String allowedOrigin;
-
     private final JwtAuthFilter jwtAuthFilter;
+    private final AppProperties appProperties;
 
-    public SecurityConfig(JwtAuthFilter jwtAuthFilter) {
+    public SecurityConfig(JwtAuthFilter jwtAuthFilter, AppProperties appProperties) {
         this.jwtAuthFilter = jwtAuthFilter;
+        this.appProperties = appProperties;
     }
 
     @Bean
@@ -59,13 +59,13 @@ public class SecurityConfig {
                         .requestMatchers("/auth/refresh-token").permitAll()
                         .requestMatchers("/auth/refresh-token/secure").permitAll() // csrf checked manually, not via JWT filter
                         // post routes - public reads, protected writes (matches post.routes.js exactly)
-                        .requestMatchers("GET", "/posts/search", "/posts", "/posts/*").permitAll()
-                        .requestMatchers("POST", "/posts").authenticated()
-                        .requestMatchers("PATCH", "/posts/*").authenticated()
-                        .requestMatchers("DELETE", "/posts/*").authenticated()
-                        .requestMatchers("PATCH", "/posts/*/likePost").authenticated()
-                        .requestMatchers("POST", "/posts/*/commentPost").authenticated()
-                        .requestMatchers("POST", "/posts/bookmarks/add").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/posts/search", "/posts", "/posts/*").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/posts").authenticated()
+                        .requestMatchers(HttpMethod.PATCH, "/posts/*").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/posts/*").authenticated()
+                        .requestMatchers(HttpMethod.PATCH, "/posts/*/likePost").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/posts/*/commentPost").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/posts/bookmarks/add").authenticated()
                         // user routes - both require a valid access token
                         .requestMatchers("/user/**").authenticated()
                         .requestMatchers("/").permitAll()
@@ -85,7 +85,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of(allowedOrigin));
+        configuration.setAllowedOrigins(List.of(appProperties.getCors().getAllowedOrigin()));
         configuration.setAllowedMethods(List.of("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true); // matches cors({ credentials: true }) - needed for the refreshToken cookie

@@ -1,6 +1,6 @@
 package com.flicklog.controller;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -11,11 +11,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class HomeController {
 
-    @Value("${NODE_ENV:development}")
-    private String nodeEnv;
+    private final Environment environment;
+
+    public HomeController(Environment environment) {
+        this.environment = environment;
+    }
 
     @GetMapping(value = "/", produces = MediaType.TEXT_HTML_VALUE)
     public String home() {
-        return "<h3> Server is running in " + nodeEnv + " mode</h3>";
+        String[] profiles = environment.getActiveProfiles();
+        String activeProfile = profiles.length > 0 ? profiles[0] : "dev";
+        return "<h3> Server is running in " + activeProfile + " mode</h3>";
     }
 }

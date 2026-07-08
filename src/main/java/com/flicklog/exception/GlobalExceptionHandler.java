@@ -4,14 +4,18 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.BindException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.util.Arrays;
+import java.util.stream.Collectors;
 
 /**
  * Mirrors middleware/error.middleware.js (ApiException -> {message, stack?})
@@ -22,6 +26,7 @@ import java.util.Arrays;
  *   spring.mvc.throw-exception-if-no-handler-found: true
  *   spring.web.resources.add-mappings: false
  */
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -42,10 +47,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ErrorResponse> handleApiException(ApiException ex) {
+        log.warn("Handled API exception ({}): {}", ex.getStatusCode(), ex.getMessage());
+
         ErrorResponse body = new ErrorResponse();
         body.setMessage(ex.getMessage());
 
-        boolean isProduction = "production".equalsIgnoreCase(env.getProperty("NODE_ENV", ""));
+        boolean isProduction = env.acceptsProfiles(org.springframework.core.env.Profiles.of("prod"));
         if (!isProduction) {
             body.setStack(Arrays.stream(ex.getStackTrace())
                     .map(StackTraceElement::toString)
@@ -53,6 +60,18 @@ public class GlobalExceptionHandler {
         }
 
         return ResponseEntity.status(ex.getStatusCode()).body(body);
+    }
+
+    @ExceptionHandler(BindException.class)
+    public ResponseEntity<ErrorResponse> handleValidation(BindException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(FieldError::getDefaultMessage)
+                .collect(Collectors.joining("; "));
+
+        log.warn("Validation failed: {}", message);
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ErrorResponse(message, null));
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
@@ -63,10 +82,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
+        log.error("Unhandled exception reached the global handler", ex);
+
         ErrorResponse body = new ErrorResponse();
         body.setMessage(ex.getMessage() != null ? ex.getMessage() : "Internal Server Error");
 
-        boolean isProduction = "production".equalsIgnoreCase(env.getProperty("NODE_ENV", ""));
+        boolean isProduction = env.acceptsProfiles(org.springframework.core.env.Profiles.of("prod"));
         if (!isProduction) {
             body.setStack(Arrays.stream(ex.getStackTrace())
                     .map(StackTraceElement::toString)

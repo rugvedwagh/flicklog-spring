@@ -1,5 +1,6 @@
 package com.flicklog.controller;
 
+import com.flicklog.config.AppProperties;
 import com.flicklog.dto.request.LoginRequest;
 import com.flicklog.dto.request.RegisterRequest;
 import com.flicklog.dto.response.AuthResponse;
@@ -8,7 +9,7 @@ import com.flicklog.service.AuthResult;
 import com.flicklog.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Value;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -23,17 +24,16 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final AppProperties appProperties;
 
-    @Value("${app.cookie.domain:}")
-    private String cookieDomain;
-
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, AppProperties appProperties) {
         this.authService = authService;
+        this.appProperties = appProperties;
     }
 
     @PostMapping("/register")
-    public ResponseEntity<AuthResponse> register(@RequestBody RegisterRequest request, HttpServletRequest httpRequest,
-                                                  HttpServletResponse httpResponse) {
+    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request, HttpServletRequest httpRequest,
+                                                 HttpServletResponse httpResponse) {
         AuthResult result = authService.register(request, httpRequest.getHeader("User-Agent"));
         setRefreshTokenCookie(httpResponse, result.getRefreshToken());
 
@@ -42,8 +42,8 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest request, HttpServletRequest httpRequest,
-                                               HttpServletResponse httpResponse) {
+    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest,
+                                              HttpServletResponse httpResponse) {
         AuthResult result = authService.login(request, httpRequest.getHeader("User-Agent"));
         setRefreshTokenCookie(httpResponse, result.getRefreshToken());
 
@@ -73,8 +73,8 @@ public class AuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Map<String, String>> logout(@RequestBody(required = false) Map<String, String> body,
-                                                        @RequestHeader(value = "x-session-id", required = false) String sessionIdHeader,
-                                                        HttpServletResponse httpResponse) {
+                                                      @RequestHeader(value = "x-session-id", required = false) String sessionIdHeader,
+                                                      HttpServletResponse httpResponse) {
         String sessionId = (body != null ? body.get("sessionId") : null);
         if (sessionId == null) {
             sessionId = sessionIdHeader;
@@ -93,6 +93,8 @@ public class AuthController {
                 .sameSite("None")
                 .path("/")
                 .maxAge(7L * 24 * 60 * 60);
+
+        String cookieDomain = appProperties.getCookie().getDomain();
         if (cookieDomain != null && !cookieDomain.isBlank()) {
             builder.domain(cookieDomain);
         }
@@ -106,6 +108,7 @@ public class AuthController {
                 .sameSite("None")
                 .path("/")
                 .maxAge(0);
+        String cookieDomain = appProperties.getCookie().getDomain();
         if (cookieDomain != null && !cookieDomain.isBlank()) {
             builder.domain(cookieDomain);
         }

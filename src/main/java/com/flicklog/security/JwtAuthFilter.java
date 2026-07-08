@@ -7,6 +7,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,8 @@ import java.util.Map;
  * Authorization header is present on a public route, it just passes through,
  * same as those routes never having the middleware attached in Express.
  */
+
+@Slf4j
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
 
@@ -48,6 +51,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (authHeader != null) {
             String[] parts = authHeader.split(" ", 2);
             if (parts.length != 2 || !"bearer".equalsIgnoreCase(parts[0])) {
+                log.warn("Rejected request: malformed Authorization header on {}", request.getRequestURI());
                 writeError(response, 401, "Invalid Authorization header format. Use: Bearer <token>");
                 return;
             }
@@ -63,6 +67,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                         userId, null, Collections.emptyList());
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             } catch (JwtException e) {
+                log.debug("Rejected request: invalid/expired access token on {} ({})", request.getRequestURI(), e.getMessage());
                 writeError(response, 401, "Invalid or expired access token");
                 return;
             }

@@ -4,6 +4,7 @@ import com.flicklog.dto.request.UpdateUserRequest;
 import com.flicklog.model.User;
 import com.flicklog.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -20,7 +21,7 @@ public class UserController {
     }
 
     @PatchMapping("/{id}/update")
-    public User updateUser(@PathVariable String id, @RequestBody UpdateUserRequest request, HttpServletRequest httpRequest) {
+    public User updateUser(@PathVariable String id, @Valid @RequestBody UpdateUserRequest request, HttpServletRequest httpRequest) {
         String requesterUserId = (String) httpRequest.getAttribute("userId");
         return userService.updateUser(id, requesterUserId, request);
     }

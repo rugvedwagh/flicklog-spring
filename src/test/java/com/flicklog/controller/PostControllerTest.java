@@ -1,6 +1,7 @@
 // src/test/java/com/flicklog/controller/PostControllerTest.java
 package com.flicklog.controller;
 
+import com.flicklog.config.AppProperties;
 import com.flicklog.config.SecurityConfig;
 import com.flicklog.exception.GlobalExceptionHandler;
 import com.flicklog.model.Post;
@@ -14,7 +15,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
-
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(PostController.class)
-@Import({SecurityConfig.class, JwtAuthFilter.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, JwtAuthFilter.class, GlobalExceptionHandler.class, AppProperties.class})
 class PostControllerTest {
 
     @Autowired private MockMvc mockMvc;

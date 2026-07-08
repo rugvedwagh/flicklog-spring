@@ -9,6 +9,7 @@ import com.flicklog.model.Post;
 import com.flicklog.model.User;
 import com.flicklog.repository.PostRepository;
 import com.flicklog.repository.UserRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.bson.types.ObjectId;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -22,6 +23,7 @@ import java.util.List;
 /**
  * Mirrors controllers/post.controllers.js.
  */
+@Slf4j
 @Service
 public class PostService {
 
@@ -62,7 +64,10 @@ public class PostService {
         }
 
         Post post = postRepository.findById(id)
-                .orElseThrow(() -> new ApiException("Post not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Post not found for id {}", id);
+                    return new ApiException("Post not found", 404);
+                });
 
         cachePost(cacheKey, post);
         return post;
@@ -74,8 +79,8 @@ public class PostService {
         if (cached != null) {
             try {
                 return objectMapper.readValue(cached, PostsPageResponse.class);
-            } catch (Exception ignored) {
-                // fall through to a fresh DB read
+            } catch (Exception e) {
+                log.debug("Cache read/parse failed for key {}, falling back to DB: {}", cacheKey, e.getMessage());
             }
         }
 
@@ -93,8 +98,8 @@ public class PostService {
 
         try {
             redisCacheService.set(cacheKey, objectMapper.writeValueAsString(response));
-        } catch (Exception ignored) {
-            // caching is best-effort here, matching the original's fire-and-forget setex
+        } catch (Exception e) {
+            log.debug("Failed to cache key {}: {}", cacheKey, e.getMessage());
         }
 
         return response;
@@ -106,8 +111,8 @@ public class PostService {
         if (cached != null) {
             try {
                 return List.of(objectMapper.readValue(cached, Post[].class));
-            } catch (Exception ignored) {
-                // fall through
+            } catch (Exception e) {
+                log.debug("Cache read/parse failed for key {}, falling back to DB: {}", cacheKey, e.getMessage());
             }
         }
 
@@ -125,7 +130,8 @@ public class PostService {
 
         try {
             redisCacheService.set(cacheKey, objectMapper.writeValueAsString(posts));
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.debug("Failed to cache key {}: {}", cacheKey, e.getMessage());
         }
 
         return posts;
@@ -153,6 +159,7 @@ public class PostService {
 
         Post saved = postRepository.save(post);
         redisCacheService.deleteByPattern("posts:*");
+        log.info("Post {} created by user {}", saved.getId(), creatorId);
         return saved;
     }
 
@@ -162,7 +169,10 @@ public class PostService {
         }
 
         Post existing = postRepository.findById(id)
-                .orElseThrow(() -> new ApiException("Post not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Update failed: post not found for id {}", id);
+                    return new ApiException("Post not found", 404);
+                });
 
         existing.setTitle(request.getTitle());
         existing.setMessage(request.getMessage());
@@ -184,6 +194,7 @@ public class PostService {
 
         redisCacheService.delete("post:" + id);
         redisCacheService.deleteByPattern("posts:*");
+        log.info("Post {} updated", id);
 
         return updated;
     }
@@ -194,7 +205,10 @@ public class PostService {
         }
 
         Post post = postRepository.findById(id)
-                .orElseThrow(() -> new ApiException("Post not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Delete failed: post not found for id {}", id);
+                    return new ApiException("Post not found", 404);
+                });
 
         if (post.getImage() != null && post.getImage().getPublicId() != null) {
             cloudinaryService.destroy(post.getImage().getPublicId());
@@ -204,6 +218,7 @@ public class PostService {
 
         redisCacheService.delete("post:" + id);
         redisCacheService.deleteByPattern("posts:*");
+        log.info("Post {} deleted", id);
     }
 
     public Post likePost(String id, String userId) {
@@ -215,14 +230,21 @@ public class PostService {
         }
 
         Post post = postRepository.findById(id)
-                .orElseThrow(() -> new ApiException("Post not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Like failed: post not found for id {}", id);
+                    return new ApiException("Post not found", 404);
+                });
 
+        boolean nowLiked;
         if (post.getLikes().contains(userId)) {
             post.setLikes(new java.util.ArrayList<>(post.getLikes().stream().filter(u -> !u.equals(userId)).toList()));
+            nowLiked = false;
         } else {
             post.getLikes().add(userId);
+            nowLiked = true;
         }
 
+        log.info("User {} {} post {}", userId, nowLiked ? "liked" : "unliked", id);
         return postRepository.save(post);
     }
 
@@ -235,9 +257,13 @@ public class PostService {
         }
 
         Post post = postRepository.findById(id)
-                .orElseThrow(() -> new ApiException("Post not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Comment failed: post not found for id {}", id);
+                    return new ApiException("Post not found", 404);
+                });
 
         post.getComments().add(value);
+        log.info("Comment added to post {}", id);
 
         redisCacheService.delete("post:" + id);
 
@@ -246,7 +272,10 @@ public class PostService {
 
     public List<String> bookmarkPost(String postId, String userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ApiException("User not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Bookmark failed: user not found for id {}", userId);
+                    return new ApiException("User not found", 404);
+                });
 
         if (user.getBookmarks().contains(postId)) {
             user.setBookmarks(new java.util.ArrayList<>(user.getBookmarks().stream().filter(id -> !id.equals(postId)).toList()));
@@ -262,6 +291,7 @@ public class PostService {
         try {
             return cloudinaryService.upload(file);
         } catch (Exception e) {
+            log.error("Cloudinary upload failed", e);
             throw new ApiException("Image upload failed: " + e.getMessage(), 500);
         }
     }
@@ -269,8 +299,8 @@ public class PostService {
     private void cachePost(String cacheKey, Post post) {
         try {
             redisCacheService.set(cacheKey, objectMapper.writeValueAsString(post));
-        } catch (Exception ignored) {
-            // best-effort, matching the original's fire-and-forget setex
+        } catch (Exception e) {
+            log.debug("Failed to cache key {}: {}", cacheKey, e.getMessage());
         }
     }
 

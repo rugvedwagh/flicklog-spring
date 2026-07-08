@@ -5,12 +5,15 @@ import com.flicklog.dto.request.UpdateUserRequest;
 import com.flicklog.exception.ApiException;
 import com.flicklog.model.User;
 import com.flicklog.repository.UserRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.bson.types.ObjectId;
 import org.springframework.stereotype.Service;
 
 /**
  * Mirrors controllers/user.controllers.js.
  */
+
+@Slf4j
 @Service
 public class UserService {
 
@@ -26,15 +29,20 @@ public class UserService {
 
     public User updateUser(String id, String requesterUserId, UpdateUserRequest request) {
         if (requesterUserId == null) {
+            log.warn("Update rejected: no authenticated requester for target user {}", id);
             throw new ApiException("Unauthorized action", 403);
         }
 
         User user = userRepository.findById(id)
-                .orElseThrow(() -> new ApiException("User not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Update failed: user not found for id {}", id);
+                    return new ApiException("User not found", 404);
+                });
 
         if (request.getName() != null) user.setName(request.getName());
         if (request.getEmail() != null) user.setEmail(request.getEmail());
 
+        log.info("User {} updated by requester {}", id, requesterUserId);
         return userRepository.save(user);
     }
 
@@ -48,8 +56,8 @@ public class UserService {
         if (cached != null) {
             try {
                 return objectMapper.readValue(cached, User.class);
-            } catch (Exception ignored) {
-                // fall through to a fresh DB read if the cached payload can't be parsed
+            } catch (Exception e) {
+                log.debug("Cache read/parse failed for user {}, falling back to DB: {}", id, e.getMessage());
             }
         }
 
@@ -59,7 +67,7 @@ public class UserService {
         try {
             redisCacheService.set(cacheKey, objectMapper.writeValueAsString(user));
         } catch (Exception e) {
-            throw new ApiException("Failed to cache user data", 500);
+            log.debug("Failed to cache user {}: {}", id, e.getMessage());
         }
 
         return user;

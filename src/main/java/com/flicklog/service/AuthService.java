@@ -11,12 +11,15 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.UUID;
 
 /**
  * Mirrors controllers/auth.controllers.js.
  */
+
+@Slf4j
 @Service
 public class AuthService {
 
@@ -39,12 +42,17 @@ public class AuthService {
         }
 
         User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new ApiException("User not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Login failed: no user found for email {}", request.getEmail());
+                    return new ApiException("User not found", 404);
+                });
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            log.warn("Login failed: incorrect password for user {}", user.getId());
             throw new ApiException("Incorrect password", 400);
         }
 
+        log.info("User {} logged in", user.getId());
         return issueSession(user, userAgent);
     }
 
@@ -57,6 +65,7 @@ public class AuthService {
             throw new ApiException("Password must be at least 4 characters long", 400);
         }
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
+            log.warn("Registration failed: email {} already in use", request.getEmail());
             throw new ApiException("Email is already in use", 400);
         }
         if (!request.getPassword().equals(request.getConfirmPassword())) {
@@ -69,7 +78,9 @@ public class AuthService {
         newUser.setName(request.getFirstName() + " " + request.getLastName());
 
         // Save first so Mongo assigns an _id before we mint tokens that embed it
+        // Save first so Mongo assigns an _id before we mint tokens that embed it
         newUser = userRepository.save(newUser);
+        log.info("New user registered: {}", newUser.getId());
 
         return issueSession(newUser, userAgent);
     }
@@ -93,13 +104,17 @@ public class AuthService {
         }
 
         User user = userRepository.findBySessions_SessionId(sessionId)
-                .orElseThrow(() -> new ApiException("User not found", 404));
+                .orElseThrow(() -> {
+                    log.warn("Logout failed: no user found for session {}", sessionId);
+                    return new ApiException("User not found", 404);
+                });
 
         user.setSessions(new java.util.ArrayList<>(user.getSessions().stream()
                 .filter(s -> !s.getSessionId().equals(sessionId))
                 .toList()));
 
         userRepository.save(user);
+        log.info("User {} logged out (session {})", user.getId(), sessionId);
     }
 
     public String refreshAccessToken(String refreshToken) {
@@ -111,6 +126,7 @@ public class AuthService {
         try {
             claims = jwtTokenService.verifyRefreshToken(refreshToken);
         } catch (JwtException e) {
+            log.warn("Refresh token rejected: {}", e.getMessage());
             throw new ApiException(401, "Invalid or expired refresh token");
         }
 
@@ -121,6 +137,7 @@ public class AuthService {
                 .anyMatch(s -> s.getRefreshToken().equals(refreshToken));
 
         if (!sessionExists) {
+            log.warn("Refresh rejected: no matching session for user {}", user.getId());
             throw new ApiException(403, "Session not found or refresh token is invalid");
         }
 
@@ -138,6 +155,7 @@ public class AuthService {
         try {
             decoded = jwtTokenService.verifyRefreshToken(refreshToken);
         } catch (JwtException e) {
+            log.warn("CSRF check failed: refresh token rejected ({})", e.getMessage());
             throw new ApiException("Invalid or expired refresh token", 403);
         }
 
@@ -150,6 +168,7 @@ public class AuthService {
                         && s.getCsrfToken().equals(csrfToken));
 
         if (!valid) {
+            log.warn("CSRF check failed: session/CSRF mismatch for session {}", sessionId);
             throw new ApiException("Invalid session or CSRF token", 403);
         }
     }

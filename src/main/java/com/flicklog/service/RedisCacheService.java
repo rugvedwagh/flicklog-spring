@@ -1,9 +1,9 @@
 package com.flicklog.service;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import com.flicklog.config.AppProperties;
 
 import java.time.Duration;
 import java.util.Set;
@@ -18,12 +18,11 @@ import java.util.Set;
 public class RedisCacheService {
 
     private final StringRedisTemplate redisTemplate;
+    private final AppProperties appProperties;
 
-    @Value("${app.cache.expiry-seconds:300}")
-    private long defaultExpirySeconds;
-
-    public RedisCacheService(StringRedisTemplate redisTemplate) {
+    public RedisCacheService(StringRedisTemplate redisTemplate, AppProperties appProperties) {
         this.redisTemplate = redisTemplate;
+        this.appProperties = appProperties;
     }
 
     public String get(String key) {
@@ -36,7 +35,7 @@ public class RedisCacheService {
     }
 
     public void set(String key, String value) {
-        set(key, value, defaultExpirySeconds);
+        set(key, value, appProperties.getCache().getExpirySeconds());
     }
 
     public void set(String key, String value, long expirySeconds) {

@@ -31,6 +31,8 @@ services:
       DB_URL: mongodb://mongo:27017/flicklog
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      SPRING_PROFILES_ACTIVE: dev
+      REACT_APP_DOMAIN: http://localhost:3000
     networks:
       - flicklog-network
 
