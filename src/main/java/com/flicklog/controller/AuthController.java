@@ -4,9 +4,9 @@ import com.flicklog.config.AppProperties;
 import com.flicklog.dto.request.LoginRequest;
 import com.flicklog.dto.request.RegisterRequest;
 import com.flicklog.dto.response.AuthResponse;
-import com.flicklog.exception.ApiException;
 import com.flicklog.service.AuthResult;
 import com.flicklog.service.AuthService;
+import com.flicklog.service.RefreshResult;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
@@ -51,24 +51,18 @@ public class AuthController {
                 result.getUser(), result.getAccessToken(), result.getCsrfToken(), result.getSessionId()));
     }
 
-    @GetMapping("/refresh-token")
-    public ResponseEntity<Map<String, String>> fetchRefreshToken(@CookieValue(value = "refreshToken", required = false) String refreshToken) {
-        if (refreshToken == null) {
-            throw new ApiException("Refresh token not found", 404);
-        }
-        return ResponseEntity.ok(Map.of("refreshToken", refreshToken));
-    }
-
     @PostMapping("/refresh-token/secure")
     public ResponseEntity<Map<String, String>> refreshToken(
             @CookieValue(value = "refreshToken", required = false) String refreshToken,
             @RequestHeader(value = "x-session-id", required = false) String sessionId,
-            @RequestHeader(value = "x-xsrf-token", required = false) String csrfToken) {
+            @RequestHeader(value = "x-xsrf-token", required = false) String csrfToken,
+            HttpServletResponse httpResponse) {
 
         authService.verifyCsrf(refreshToken, sessionId, csrfToken);
-        String newAccessToken = authService.refreshAccessToken(refreshToken);
+        RefreshResult result = authService.refreshAccessToken(refreshToken, sessionId);
+        setRefreshTokenCookie(httpResponse, result.getRefreshToken());
 
-        return ResponseEntity.ok(Map.of("accessToken", newAccessToken));
+        return ResponseEntity.ok(Map.of("accessToken", result.getAccessToken()));
     }
 
     @PostMapping("/logout")
@@ -89,8 +83,8 @@ public class AuthController {
     private void setRefreshTokenCookie(HttpServletResponse response, String refreshToken) {
         ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from("refreshToken", refreshToken)
                 .httpOnly(true)
-                .secure(true)
-                .sameSite("None")
+                .secure(appProperties.getCookie().isSecure())
+                .sameSite(appProperties.getCookie().getSameSite())
                 .path("/")
                 .maxAge(7L * 24 * 60 * 60);
 
@@ -104,8 +98,8 @@ public class AuthController {
     private void clearRefreshTokenCookie(HttpServletResponse response) {
         ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from("refreshToken", "")
                 .httpOnly(true)
-                .secure(true)
-                .sameSite("None")
+                .secure(appProperties.getCookie().isSecure())
+                .sameSite(appProperties.getCookie().getSameSite())
                 .path("/")
                 .maxAge(0);
         String cookieDomain = appProperties.getCookie().getDomain();

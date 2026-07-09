@@ -9,6 +9,7 @@ import com.flicklog.security.JwtAuthFilter;
 import com.flicklog.security.JwtTokenService;
 import com.flicklog.service.AuthResult;
 import com.flicklog.service.AuthService;
+import com.flicklog.service.RefreshResult;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,37 +75,21 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.accessToken").value("access-token"))
                 .andExpect(header().string("Set-Cookie", containsString("refreshToken=refresh-token-value")));
     }
-
-    // --- GET /auth/refresh-token ---
-
-    @Test
-    void fetchRefreshToken_withCookiePresent_returnsToken() throws Exception {
-        mockMvc.perform(get("/auth/refresh-token")
-                        .cookie(new Cookie("refreshToken", "existing-refresh-token")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.refreshToken").value("existing-refresh-token"));
-    }
-
-    @Test
-    void fetchRefreshToken_withoutCookie_returns404() throws Exception {
-        mockMvc.perform(get("/auth/refresh-token"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.message").value("Refresh token not found"));
-    }
-
     // --- POST /auth/refresh-token/secure ---
 
     @Test
     void refreshTokenSecure_withValidCsrfAndToken_returnsNewAccessToken() throws Exception {
         doNothing().when(authService).verifyCsrf("refresh-tok", "session-1", "csrf-tok");
-        when(authService.refreshAccessToken("refresh-tok")).thenReturn("new-access-token");
+        when(authService.refreshAccessToken("refresh-tok", "session-1"))
+                .thenReturn(new RefreshResult("new-access-token", "new-refresh-token"));
 
         mockMvc.perform(post("/auth/refresh-token/secure")
                         .cookie(new Cookie("refreshToken", "refresh-tok"))
                         .header("x-session-id", "session-1")
                         .header("x-xsrf-token", "csrf-tok"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accessToken").value("new-access-token"));
+                .andExpect(jsonPath("$.accessToken").value("new-access-token"))
+                .andExpect(header().string("Set-Cookie", containsString("refreshToken=new-refresh-token")));
     }
 
     @Test

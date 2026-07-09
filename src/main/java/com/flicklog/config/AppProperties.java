@@ -34,5 +34,7 @@ public class AppProperties {
     @Data
     public static class Cookie {
         private String domain = "";
+        private boolean secure = true;
+        private String sameSite = "None";
     }
 }

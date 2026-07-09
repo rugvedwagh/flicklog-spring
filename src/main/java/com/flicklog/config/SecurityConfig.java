@@ -56,7 +56,6 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // auth routes
                         .requestMatchers("/auth/register", "/auth/login", "/auth/logout").permitAll()
-                        .requestMatchers("/auth/refresh-token").permitAll()
                         .requestMatchers("/auth/refresh-token/secure").permitAll() // csrf checked manually, not via JWT filter
                         // post routes - public reads, protected writes (matches post.routes.js exactly)
                         .requestMatchers(HttpMethod.GET, "/posts/search", "/posts", "/posts/*").permitAll()

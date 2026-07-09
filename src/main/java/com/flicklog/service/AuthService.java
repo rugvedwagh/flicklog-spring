@@ -1,5 +1,6 @@
 package com.flicklog.service;
 
+import com.flicklog.config.JwtProperties;
 import com.flicklog.dto.request.LoginRequest;
 import com.flicklog.dto.request.RegisterRequest;
 import com.flicklog.exception.ApiException;
@@ -13,6 +14,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -26,11 +31,14 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
+    private final JwtProperties jwtProperties;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder,
+                       JwtTokenService jwtTokenService, JwtProperties jwtProperties) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
+        this.jwtProperties = jwtProperties;
     }
 
     public AuthResult login(LoginRequest request, String userAgent) {
@@ -86,6 +94,8 @@ public class AuthService {
     }
 
     private AuthResult issueSession(User user, String userAgent) {
+        pruneExpiredSessions(user);
+
         String sessionId = UUID.randomUUID().toString();
         String csrfToken = jwtTokenService.generateCsrfToken();
         String refreshToken = jwtTokenService.generateRefreshToken(user);
@@ -117,8 +127,8 @@ public class AuthService {
         log.info("User {} logged out (session {})", user.getId(), sessionId);
     }
 
-    public String refreshAccessToken(String refreshToken) {
-        if (isBlank(refreshToken)) {
+    public RefreshResult refreshAccessToken(String refreshToken, String sessionId) {
+        if (isBlank(refreshToken) || isBlank(sessionId)) {
             throw new ApiException(401, "Refresh token is missing or invalid");
         }
 
@@ -133,15 +143,35 @@ public class AuthService {
         User user = userRepository.findById(claims.get("id", String.class))
                 .orElseThrow(() -> new ApiException(404, "User not found"));
 
-        boolean sessionExists = user.getSessions().stream()
-                .anyMatch(s -> s.getRefreshToken().equals(refreshToken));
+        pruneExpiredSessions(user);
 
-        if (!sessionExists) {
-            log.warn("Refresh rejected: no matching session for user {}", user.getId());
+        Session session = user.getSessions().stream()
+                .filter(s -> s.getSessionId().equals(sessionId))
+                .findFirst()
+                .orElse(null);
+
+        if (session == null) {
+            log.warn("Refresh rejected: no session {} for user {}", sessionId, user.getId());
             throw new ApiException(403, "Session not found or refresh token is invalid");
         }
 
-        return jwtTokenService.generateAccessToken(user);
+        if (!session.getRefreshToken().equals(refreshToken)) {
+            // The token's signature/expiry are valid, but it doesn't match what's
+            // currently stored for this session - it was already rotated out.
+            // Treat this as likely theft/replay: nuke every session for this user.
+            log.warn("Refresh token reuse detected for user {} (session {}) - revoking all sessions", user.getId(), sessionId);
+            user.setSessions(new java.util.ArrayList<>());
+            userRepository.save(user);
+            throw new ApiException(403, "Session invalidated due to suspected token reuse. Please log in again.");
+        }
+
+        String newRefreshToken = jwtTokenService.generateRefreshToken(user);
+        String newAccessToken = jwtTokenService.generateAccessToken(user);
+        session.setRefreshToken(newRefreshToken);
+        userRepository.save(user);
+
+        log.info("Access token refreshed for user {} (session {})", user.getId(), sessionId);
+        return new RefreshResult(newAccessToken, newRefreshToken);
     }
 
     // Mirrors middleware/csrf.middleware.js's verifyCsrfToken, run before refreshAccessToken
@@ -171,6 +201,21 @@ public class AuthService {
             log.warn("CSRF check failed: session/CSRF mismatch for session {}", sessionId);
             throw new ApiException("Invalid session or CSRF token", 403);
         }
+    }
+
+    // A session's own JWT refresh token can't outlive refreshExpiryDays, so any
+    // session record older than that is dead weight - safe to drop it here.
+    private void pruneExpiredSessions(User user) {
+        Instant cutoff = Instant.now().minus(Duration.ofDays(jwtProperties.getRefreshExpiryDays()));
+        List<Session> active = user.getSessions().stream()
+                .filter(s -> s.getCreatedAt().isAfter(cutoff))
+                .toList();
+
+        int removed = user.getSessions().size() - active.size();
+        if (removed > 0) {
+            log.info("Pruned {} stale session(s) for user {}", removed, user.getId());
+        }
+        user.setSessions(new ArrayList<>(active));
     }
 
     private boolean isBlank(String s) {
