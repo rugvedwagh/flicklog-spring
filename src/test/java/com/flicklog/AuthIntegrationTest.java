@@ -2,7 +2,7 @@
 package com.flicklog;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.flicklog.dto.request.RegisterRequest;
+import com.flicklog.auth.dto.request.RegisterRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
