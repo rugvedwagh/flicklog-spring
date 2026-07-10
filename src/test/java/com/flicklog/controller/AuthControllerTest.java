@@ -108,27 +108,32 @@ class AuthControllerTest {
     // --- logout ---
 
     @Test
-    void logout_withSessionIdInBody_returns200AndClearsCookie() throws Exception {
-        doNothing().when(authService).logout("session-from-body");
+    void logout_withValidCsrfAndSession_returns200AndClearsCookie() throws Exception {
+        doNothing().when(authService).verifyCsrf("refresh-tok", "session-1", "csrf-tok");
+        doNothing().when(authService).logout("session-1");
 
         mockMvc.perform(post("/auth/logout")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"session-from-body\"}"))
+                        .cookie(new Cookie("refreshToken", "refresh-tok"))
+                        .header("x-session-id", "session-1")
+                        .header("x-xsrf-token", "csrf-tok"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("Logged out successfully"))
                 .andExpect(header().string("Set-Cookie", containsString("Max-Age=0")));
 
-        verify(authService).logout("session-from-body");
+        verify(authService).logout("session-1");
     }
 
     @Test
-    void logout_withSessionIdHeaderFallback_usesHeaderWhenBodyMissing() throws Exception {
-        doNothing().when(authService).logout("session-from-header");
+    void logout_withInvalidCsrf_returns403AndDoesNotLogOut() throws Exception {
+        doThrow(new ApiException("Invalid session or CSRF token", 403))
+                .when(authService).verifyCsrf(any(), any(), any());
 
         mockMvc.perform(post("/auth/logout")
-                        .header("x-session-id", "session-from-header"))
-                .andExpect(status().isOk());
+                        .cookie(new Cookie("refreshToken", "refresh-tok"))
+                        .header("x-session-id", "session-1")
+                        .header("x-xsrf-token", "wrong-csrf"))
+                .andExpect(status().isForbidden());
 
-        verify(authService).logout("session-from-header");
+        verify(authService, never()).logout(any());
     }
 }

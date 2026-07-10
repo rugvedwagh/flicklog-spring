@@ -66,16 +66,15 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Map<String, String>> logout(@RequestBody(required = false) Map<String, String> body,
-                                                      @RequestHeader(value = "x-session-id", required = false) String sessionIdHeader,
-                                                      HttpServletResponse httpResponse) {
-        String sessionId = (body != null ? body.get("sessionId") : null);
-        if (sessionId == null) {
-            sessionId = sessionIdHeader;
-        }
+    public ResponseEntity<Map<String, String>> logout(
+            @CookieValue(value = "refreshToken", required = false) String refreshToken,
+            @RequestHeader(value = "x-session-id", required = false) String sessionId,
+            @RequestHeader(value = "x-xsrf-token", required = false) String csrfToken,
+            HttpServletResponse response) {
 
+        authService.verifyCsrf(refreshToken, sessionId, csrfToken);
         authService.logout(sessionId);
-        clearRefreshTokenCookie(httpResponse);
+        clearRefreshTokenCookie(response);
 
         return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
     }

@@ -8,6 +8,7 @@ import com.flicklog.model.Session;
 import com.flicklog.model.User;
 import com.flicklog.repository.UserRepository;
 import com.flicklog.security.JwtTokenService;
+import com.flicklog.security.LoginRateLimiter;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -32,34 +33,39 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
     private final JwtProperties jwtProperties;
+    private final LoginRateLimiter loginRateLimiter;
 
     public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder,
-                       JwtTokenService jwtTokenService, JwtProperties jwtProperties) {
+                       JwtTokenService jwtTokenService, JwtProperties jwtProperties, LoginRateLimiter loginRateLimiter) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
         this.jwtProperties = jwtProperties;
+        this.loginRateLimiter = loginRateLimiter;
     }
 
     public AuthResult login(LoginRequest request, String userAgent) {
-        if (isBlank(request.getEmail()) || isBlank(request.getPassword())) {
-            throw new ApiException("Email and password are required", 400);
-        }
-        if (request.getPassword().length() < 4) {
-            throw new ApiException("Password must be at least 4 characters long", 400);
+        String rateLimitKey = request.getEmail().toLowerCase();
+
+        if (loginRateLimiter.isBlocked(rateLimitKey)) {
+            log.warn("Login blocked: too many failed attempts for {}", request.getEmail());
+            throw new ApiException(429, "Too many failed login attempts. Please try again later.");
         }
 
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> {
+                    loginRateLimiter.recordFailure(rateLimitKey);
                     log.warn("Login failed: no user found for email {}", request.getEmail());
                     return new ApiException("User not found", 404);
                 });
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            loginRateLimiter.recordFailure(rateLimitKey);
             log.warn("Login failed: incorrect password for user {}", user.getId());
             throw new ApiException("Incorrect password", 400);
         }
 
+        loginRateLimiter.reset(rateLimitKey);
         log.info("User {} logged in", user.getId());
         return issueSession(user, userAgent);
     }
@@ -155,7 +161,7 @@ public class AuthService {
             throw new ApiException(403, "Session not found or refresh token is invalid");
         }
 
-        if (!session.getRefreshToken().equals(refreshToken)) {
+        if (!constantTimeEquals(session.getRefreshToken(), refreshToken)) {
             // The token's signature/expiry are valid, but it doesn't match what's
             // currently stored for this session - it was already rotated out.
             // Treat this as likely theft/replay: nuke every session for this user.
@@ -194,8 +200,8 @@ public class AuthService {
 
         boolean valid = user.getSessions().stream()
                 .anyMatch(s -> s.getSessionId().equals(sessionId)
-                        && s.getRefreshToken().equals(refreshToken)
-                        && s.getCsrfToken().equals(csrfToken));
+                        && constantTimeEquals(s.getRefreshToken(), refreshToken)
+                        && constantTimeEquals(s.getCsrfToken(), csrfToken));
 
         if (!valid) {
             log.warn("CSRF check failed: session/CSRF mismatch for session {}", sessionId);
@@ -220,5 +226,17 @@ public class AuthService {
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    // Plain String.equals() short-circuits on the first mismatched character,
+    // which leaks timing information about secrets. MessageDigest.isEqual()
+    // always compares every byte, regardless of where the first difference is.
+    private boolean constantTimeEquals(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+                a.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                b.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }

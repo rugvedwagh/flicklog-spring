@@ -8,10 +8,10 @@ import com.flicklog.exception.ApiException;
 import com.flicklog.model.User;
 import com.flicklog.repository.UserRepository;
 import com.flicklog.security.JwtTokenService;
+import com.flicklog.security.LoginRateLimiter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -33,7 +33,9 @@ class AuthServiceTest {
     @Mock private JwtTokenService jwtTokenService;
     @Mock private JwtProperties jwtProperties;
 
-    @InjectMocks private AuthService authService;
+    private AuthService authService;
+
+    private final LoginRateLimiter loginRateLimiter = new LoginRateLimiter();
 
     private User existingUser;
 
@@ -43,6 +45,8 @@ class AuthServiceTest {
         existingUser.setId("507f1f77bcf86cd799439011");
         existingUser.setEmail("test@example.com");
         existingUser.setPassword("hashed-password");
+
+        authService = new AuthService(userRepository, passwordEncoder, jwtTokenService, jwtProperties, loginRateLimiter);
     }
 
     @Test
@@ -166,7 +170,7 @@ class AuthServiceTest {
     // just reject the one request.
     @Test
     void refreshAccessToken_withStaleReusedToken_revokesAllSessionsAndThrows403() {
-        Session session = new Session("csrf-tok", "current-refresh-token", "session-1", "some-agent", java.time.Instant.now().plusSeconds(60));
+        Session session = new Session("csrf-tok", "current-refresh-token", "session-1", "some-agent", java.time.Instant.now());
         Session otherDeviceSession = new Session("csrf-tok-2", "other-device-token", "session-2", "other-agent", java.time.Instant.now());
         existingUser.getSessions().add(session);
         existingUser.getSessions().add(otherDeviceSession);
@@ -230,5 +234,22 @@ class AuthServiceTest {
                 .contains("fresh-session")
                 .doesNotContain("old-session");
         assertThat(existingUser.getSessions()).hasSize(2); // fresh-session survives + one new session from this login
+    }
+
+    @Test
+    void login_withTooManyFailedAttempts_throws429() {
+        for (int i = 0; i < 5; i++) {
+            loginRateLimiter.recordFailure("test@example.com");
+        }
+
+        LoginRequest request = new LoginRequest();
+        request.setEmail("test@example.com");
+        request.setPassword("password123");
+
+        assertThatThrownBy(() -> authService.login(request, "test-agent"))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Too many failed login attempts. Please try again later.");
+
+        verifyNoInteractions(userRepository, passwordEncoder);
     }
 }
