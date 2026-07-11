@@ -27,11 +27,13 @@ public class LoginRateLimiter {
         if (window == null) {
             return false;
         }
-        if (window.lockedUntil() != null && Instant.now().isBefore(window.lockedUntil())) {
-            return true;
+        if (window.lockedUntil() != null) {
+            if (Instant.now().isBefore(window.lockedUntil())) {
+                return true;
+            }
+            // Lockout has expired - clean up so this key doesn't linger forever.
+            attempts.remove(key, window);
         }
-        // Lockout has expired - clean up so this key doesn't linger forever.
-        attempts.remove(key, window);
         return false;
     }
 
