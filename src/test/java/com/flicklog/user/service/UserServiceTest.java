@@ -30,6 +30,7 @@ class UserServiceTest {
     @InjectMocks private UserService userService;
 
     private static final String VALID_ID = "507f1f77bcf86cd799439011";
+    private static final String OTHER_USER_ID = "507f1f77bcf86cd799439099";
 
     private User existingUser;
 
@@ -52,6 +53,22 @@ class UserServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Unauthorized action");
 
+        verifyNoInteractions(userRepository);
+    }
+
+    // Regression test for the IDOR bug: an authenticated user must not be able
+    // to update someone else's account just because they hold a valid token.
+    @Test
+    void updateUser_requesterNotOwner_throws403() {
+        UpdateUserRequest request = new UpdateUserRequest();
+        request.setName("Hacked Name");
+
+        assertThatThrownBy(() -> userService.updateUser(VALID_ID, OTHER_USER_ID, request))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("You can only update your own account");
+
+        // ownership is checked before any DB lookup - target user's existence
+        // should never be revealed to a non-owner
         verifyNoInteractions(userRepository);
     }
 

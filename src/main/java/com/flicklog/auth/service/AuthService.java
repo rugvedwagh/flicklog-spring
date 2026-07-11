@@ -44,28 +44,32 @@ public class AuthService {
         this.loginRateLimiter = loginRateLimiter;
     }
 
-    public AuthResult login(LoginRequest request, String userAgent) {
-        String rateLimitKey = request.getEmail().toLowerCase();
+    public AuthResult login(LoginRequest request, String userAgent, String ipAddress) {
+        String emailKey = "email:" + request.getEmail().toLowerCase();
+        String ipKey = "ip:" + ipAddress;
 
-        if (loginRateLimiter.isBlocked(rateLimitKey)) {
-            log.warn("Login blocked: too many failed attempts for {}", request.getEmail());
+        if (loginRateLimiter.isBlocked(emailKey) || loginRateLimiter.isBlocked(ipKey)) {
+            log.warn("Login blocked: too many failed attempts for email={} or ip={}", request.getEmail(), ipAddress);
             throw new ApiException(429, "Too many failed login attempts. Please try again later.");
         }
 
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> {
-                    loginRateLimiter.recordFailure(rateLimitKey);
+                    loginRateLimiter.recordFailure(emailKey);
+                    loginRateLimiter.recordFailure(ipKey);
                     log.warn("Login failed: no user found for email {}", request.getEmail());
                     return new ApiException("User not found", 404);
                 });
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            loginRateLimiter.recordFailure(rateLimitKey);
+            loginRateLimiter.recordFailure(emailKey);
+            loginRateLimiter.recordFailure(ipKey);
             log.warn("Login failed: incorrect password for user {}", user.getId());
             throw new ApiException("Incorrect password", 400);
         }
 
-        loginRateLimiter.reset(rateLimitKey);
+        loginRateLimiter.reset(emailKey);
+        loginRateLimiter.reset(ipKey);
         log.info("User {} logged in", user.getId());
         return issueSession(user, userAgent);
     }

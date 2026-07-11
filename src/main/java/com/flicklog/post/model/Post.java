@@ -38,7 +38,7 @@ public class Post {
 
     private List<String> likes = new ArrayList<>();
 
-    private List<String> comments = new ArrayList<>();
+    private List<Comment> comments = new ArrayList<>();
 
     private Instant createdAt = Instant.now();
 }

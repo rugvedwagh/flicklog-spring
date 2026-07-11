@@ -5,9 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flicklog.common.cache.RedisCacheService;
 import com.flicklog.post.dto.request.PostRequest;
 import com.flicklog.common.exception.ApiException;
+import com.flicklog.post.model.Comment;
 import com.flicklog.post.model.Post;
 import com.flicklog.post.repository.PostRepository;
-import com.flicklog.user.repository.UserRepository;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.bson.types.ObjectId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +24,7 @@ import com.flicklog.post.model.ImageData;
 import com.flicklog.user.model.User;
 import com.flicklog.post.dto.response.PostsPageResponse;
 import org.springframework.data.domain.Pageable;
+
 
 import java.util.List;
 import java.util.Optional;
@@ -32,22 +38,26 @@ import static org.mockito.Mockito.*;
 class PostServiceTest {
 
     @Mock private PostRepository postRepository;
-    @Mock private UserRepository userRepository;
     @Mock private RedisCacheService redisCacheService;
     @Mock private CloudinaryService cloudinaryService;
     @Mock private ObjectMapper objectMapper;
+    @Mock private MongoTemplate mongoTemplate;   // replaces UserRepository
 
     @InjectMocks private PostService postService;
 
     private Post existingPost;
     private String postId;
+    private String ownerId;
 
     @BeforeEach
     void setUp() {
         postId = new ObjectId().toHexString();
+        ownerId = new ObjectId().toHexString();
+
         existingPost = new Post();
         existingPost.setId(postId);
         existingPost.setTitle("Original title");
+        existingPost.setCreator(ownerId);
         existingPost.setLikes(new java.util.ArrayList<>());
         existingPost.setComments(new java.util.ArrayList<>());
     }
@@ -82,8 +92,11 @@ class PostServiceTest {
 
     @Test
     void likePost_addsUserIdWhenNotAlreadyLiked() {
-        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
-        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // pull attempt finds nothing to remove
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(Post.class)))
+                .thenReturn(null)   // first call: pull attempt, not liked yet
+                .thenReturn(existingPostWithLikes("user-123")); // second call: addToSet succeeds
 
         Post result = postService.likePost(postId, "user-123");
 
@@ -92,13 +105,16 @@ class PostServiceTest {
 
     @Test
     void likePost_removesUserIdWhenAlreadyLiked() {
-        existingPost.getLikes().add("user-123");
-        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
-        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        Post afterRemoval = existingPostWithLikes(); // empty likes after pull
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(Post.class)))
+                .thenReturn(afterRemoval); // pull attempt succeeds immediately
 
         Post result = postService.likePost(postId, "user-123");
 
         assertThat(result.getLikes()).isEmpty();
+        // only one Mongo call needed - the pull matched, so addToSet is never attempted
+        verify(mongoTemplate, times(1)).findAndModify(any(), any(), any(), eq(Post.class));
     }
 
     @Test
@@ -106,11 +122,13 @@ class PostServiceTest {
         assertThatThrownBy(() -> postService.likePost(postId, null))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Unauthenticated");
+
+        verifyNoInteractions(mongoTemplate);
     }
 
     @Test
     void commentPost_withBlankValue_throws400() {
-        assertThatThrownBy(() -> postService.commentPost(postId, "  "))
+        assertThatThrownBy(() -> postService.commentPost(postId, "  ", ownerId))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Comment cannot be empty");
     }
@@ -161,14 +179,35 @@ class PostServiceTest {
     }
 
     @Test
-    void fetchPosts_emptyResults_throws404() {
+    void fetchPosts_emptyResults_returnsEmptyPageInsteadOfThrowing() {
         when(redisCacheService.get(any())).thenReturn(null);
         when(postRepository.count()).thenReturn(0L);
         when(postRepository.findAllByOrderByIdDesc(any(Pageable.class))).thenReturn(List.of());
 
-        assertThatThrownBy(() -> postService.fetchPosts(1))
+        PostsPageResponse result = postService.fetchPosts(1);
+
+        assertThat(result.getData()).isEmpty();
+        assertThat(result.getCurrentPage()).isEqualTo(1);
+        assertThat(result.getNumberOfPages()).isEqualTo(0);
+    }
+
+    @Test
+    void likePost_postNotFound_throws404() {
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(Post.class)))
+                .thenReturn(null); // both pull and addToSet return null - post doesn't exist
+
+        assertThatThrownBy(() -> postService.likePost(postId, "user-123"))
                 .isInstanceOf(ApiException.class)
-                .hasMessage("No posts found");
+                .hasMessage("Post not found");
+    }
+
+    // small helper for building the "post after mongo update" return value
+    private Post existingPostWithLikes(String... likes) {
+        Post post = new Post();
+        post.setId(postId);
+        post.setLikes(new java.util.ArrayList<>(java.util.List.of(likes)));
+        return post;
     }
 
     // --- fetchPostsBySearch ---
@@ -184,12 +223,13 @@ class PostServiceTest {
     }
 
     @Test
-    void fetchPostsBySearch_noResults_throws404() {
+    void fetchPostsBySearch_noResults_returnsEmptyListInsteadOfThrowing() {
         when(redisCacheService.get(any())).thenReturn(null);
         when(postRepository.searchByTitleOrTags(any(), any())).thenReturn(List.of());
 
-        assertThatThrownBy(() -> postService.fetchPostsBySearch("nothing", null))
-                .isInstanceOf(ApiException.class);
+        List<Post> result = postService.fetchPostsBySearch("nothing", null);
+
+        assertThat(result).isEmpty();
     }
 
     // --- updatePost ---
@@ -198,9 +238,20 @@ class PostServiceTest {
     void updatePost_withInvalidId_throws400() {
         PostRequest request = new PostRequest();
 
-        assertThatThrownBy(() -> postService.updatePost("not-an-id", request, null))
+        assertThatThrownBy(() -> postService.updatePost("not-an-id", request, null, ownerId))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Invalid post ID");
+    }
+
+    @Test
+    void updatePost_nullRequester_throws401() {
+        PostRequest request = new PostRequest();
+
+        assertThatThrownBy(() -> postService.updatePost(postId, request, null, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Unauthorized action");
+
+        verifyNoInteractions(postRepository);
     }
 
     @Test
@@ -208,9 +259,27 @@ class PostServiceTest {
         when(postRepository.findById(postId)).thenReturn(Optional.empty());
         PostRequest request = new PostRequest();
 
-        assertThatThrownBy(() -> postService.updatePost(postId, request, null))
+        assertThatThrownBy(() -> postService.updatePost(postId, request, null, ownerId))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Post not found");
+    }
+
+    // Regression test for the IDOR bug: a logged-in user who isn't the post's
+// creator must not be able to update someone else's post.
+    @Test
+    void updatePost_requesterNotOwner_throws403() {
+        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
+
+        PostRequest request = new PostRequest();
+        request.setTitle("Hacked title");
+
+        String someoneElseId = new ObjectId().toHexString();
+
+        assertThatThrownBy(() -> postService.updatePost(postId, request, null, someoneElseId))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("You can only update your own posts");
+
+        verify(postRepository, never()).save(any());
     }
 
     @Test
@@ -224,7 +293,7 @@ class PostServiceTest {
         when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        Post result = postService.updatePost(postId, request, null);
+        Post result = postService.updatePost(postId, request, null, ownerId);
 
         assertThat(result.getTitle()).isEqualTo("Updated title");
         assertThat(result.getTags()).containsExactly("newtag");
@@ -237,7 +306,7 @@ class PostServiceTest {
 
     @Test
     void deletePost_withInvalidId_throws400() {
-        assertThatThrownBy(() -> postService.deletePost("not-an-id"))
+        assertThatThrownBy(() -> postService.deletePost("not-an-id", ownerId))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Invalid post ID");
     }
@@ -246,7 +315,7 @@ class PostServiceTest {
     void deletePost_notFound_throws404() {
         when(postRepository.findById(postId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> postService.deletePost(postId))
+        assertThatThrownBy(() -> postService.deletePost(postId, ownerId))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Post not found");
     }
@@ -256,9 +325,37 @@ class PostServiceTest {
         existingPost.setImage(new ImageData("http://cloud/img.png", "public-id-123", "img.png"));
         when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
 
-        postService.deletePost(postId);
+        postService.deletePost(postId, ownerId);
 
         verify(cloudinaryService).destroy("public-id-123");
+        verify(postRepository).deleteById(postId);
+        verify(redisCacheService).delete("post:" + postId);
+        verify(redisCacheService).deleteByPattern("posts:*");
+    }
+
+    // Regression test for the IDOR bug: a logged-in user who isn't the post's
+// creator must not be able to delete someone else's post.
+    @Test
+    void deletePost_requesterNotOwner_throws403() {
+        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
+
+        String someoneElseId = new ObjectId().toHexString();
+
+        assertThatThrownBy(() -> postService.deletePost(postId, someoneElseId))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("You can only delete your own posts");
+
+        verify(postRepository, never()).deleteById(any());
+        verify(cloudinaryService, never()).destroy(any());
+    }
+
+    @Test
+    void deletePost_byOwner_deletesAndClearsCache() {
+        existingPost.setImage(null); // no image to destroy in this case
+        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
+
+        postService.deletePost(postId, ownerId);
+
         verify(postRepository).deleteById(postId);
         verify(redisCacheService).delete("post:" + postId);
         verify(redisCacheService).deleteByPattern("posts:*");
@@ -267,36 +364,74 @@ class PostServiceTest {
     // --- commentPost (happy path) ---
 
     @Test
-    void commentPost_withValidValue_addsCommentAndClearsCache() {
-        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
-        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    void commentPost_withValidValue_addsCommentWithAuthorAndClearsCache() {
+        Post afterComment = new Post();
+        afterComment.setId(postId);
+        afterComment.setComments(new java.util.ArrayList<>(
+                java.util.List.of(new Comment("comment-id-1", ownerId, "Great post!", java.time.Instant.now()))));
 
-        Post result = postService.commentPost(postId, "Great post!");
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(Post.class)))
+                .thenReturn(afterComment);
 
-        assertThat(result.getComments()).containsExactly("Great post!");
+        Post result = postService.commentPost(postId, "Great post!", ownerId);
+
+        assertThat(result.getComments()).hasSize(1);
+        assertThat(result.getComments().get(0).getValue()).isEqualTo("Great post!");
+        assertThat(result.getComments().get(0).getAuthorId()).isEqualTo(ownerId);
         verify(redisCacheService).delete("post:" + postId);
+    }
+
+    @Test
+    void commentPost_withoutAuthorId_throws401() {
+        assertThatThrownBy(() -> postService.commentPost(postId, "Great post!", null))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Unauthenticated");
+
+        verifyNoInteractions(mongoTemplate);
+    }
+
+    @Test
+    void commentPost_postNotFound_throws404() {
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(Post.class)))
+                .thenReturn(null);
+
+        assertThatThrownBy(() -> postService.commentPost(postId, "Great post!", ownerId))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Post not found");
     }
 
     // --- bookmarkPost ---
 
     @Test
     void bookmarkPost_addsWhenNotBookmarked() {
-        User user = new User();
-        user.setId("user-1");
-        when(userRepository.findById("user-1")).thenReturn(Optional.of(user));
+        when(mongoTemplate.exists(any(Query.class), eq(User.class))).thenReturn(true);
+
+        User afterAdd = new User();
+        afterAdd.setId("user-1");
+        afterAdd.getBookmarks().add(postId);
+
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(User.class)))
+                .thenReturn(null)      // pull attempt: not bookmarked yet
+                .thenReturn(afterAdd); // addToSet attempt: succeeds
 
         List<String> result = postService.bookmarkPost(postId, "user-1");
 
         assertThat(result).containsExactly(postId);
-        verify(userRepository).save(user);
     }
 
     @Test
     void bookmarkPost_removesWhenAlreadyBookmarked() {
-        User user = new User();
-        user.setId("user-1");
-        user.getBookmarks().add(postId);
-        when(userRepository.findById("user-1")).thenReturn(Optional.of(user));
+        when(mongoTemplate.exists(any(Query.class), eq(User.class))).thenReturn(true);
+
+        User afterRemoval = new User();
+        afterRemoval.setId("user-1"); // bookmarks left empty
+
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), eq(User.class)))
+                .thenReturn(afterRemoval); // pull attempt succeeds immediately
 
         List<String> result = postService.bookmarkPost(postId, "user-1");
 
@@ -305,10 +440,39 @@ class PostServiceTest {
 
     @Test
     void bookmarkPost_unknownUser_throws404() {
-        when(userRepository.findById("ghost")).thenReturn(Optional.empty());
+        when(mongoTemplate.exists(any(Query.class), eq(User.class))).thenReturn(false);
 
         assertThatThrownBy(() -> postService.bookmarkPost(postId, "ghost"))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("User not found");
+
+        verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(User.class));
+    }
+
+    @Test
+    void updatePost_creatorIsNull_throws403() {
+        existingPost.setCreator(null); // simulates a legacy/malformed document
+        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
+
+        PostRequest request = new PostRequest();
+        request.setTitle("Attempted title");
+
+        assertThatThrownBy(() -> postService.updatePost(postId, request, null, ownerId))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("You can only update your own posts");
+
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void deletePost_creatorIsNull_throws403() {
+        existingPost.setCreator(null);
+        when(postRepository.findById(postId)).thenReturn(Optional.of(existingPost));
+
+        assertThatThrownBy(() -> postService.deletePost(postId, ownerId))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("You can only delete your own posts");
+
+        verify(postRepository, never()).deleteById(any());
     }
 }

@@ -66,7 +66,7 @@ class AuthControllerTest {
         user.setId("507f1f77bcf86cd799439011");
 
         AuthResult result = new AuthResult(user, "access-token", "refresh-token-value", "csrf-token", "session-id");
-        when(authService.login(any(), any())).thenReturn(result);
+        when(authService.login(any(), any(), any())).thenReturn(result);
 
         mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

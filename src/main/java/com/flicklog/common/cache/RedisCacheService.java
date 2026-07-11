@@ -6,6 +6,12 @@ import org.springframework.stereotype.Service;
 import com.flicklog.common.config.AppProperties;
 
 import java.time.Duration;
+import java.util.HashSet;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
+import org.springframework.data.redis.core.ScanOptions;
+
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 /**
@@ -54,15 +60,33 @@ public class RedisCacheService {
         }
     }
 
-    // Mirrors the `redis.keys('posts:*')` + bulk delete pattern used after every post mutation
+    // Mirrors the `redis.keys('posts:*')` + bulk delete pattern used after every post mutation.
+// Uses SCAN with a cursor instead of KEYS - KEYS blocks the entire Redis
+// instance while it walks the whole keyspace in one shot, which is fine for
+// a handful of keys locally but a known way to stall production Redis under
+// load. SCAN walks it incrementally across multiple round-trips instead.
     public void deleteByPattern(String pattern) {
         try {
-            Set<String> keys = redisTemplate.keys(pattern);
-            if (keys != null && !keys.isEmpty()) {
+            Set<String> keys = scanKeys(pattern);
+            if (!keys.isEmpty()) {
                 redisTemplate.delete(keys);
             }
         } catch (Exception e) {
             log.warn("Redis pattern delete failed for {}: {}", pattern, e.getMessage());
         }
+    }
+
+    private Set<String> scanKeys(String pattern) {
+        Set<String> keys = new HashSet<>();
+        redisTemplate.execute((RedisCallback<Void>) connection -> {
+            try (Cursor<byte[]> cursor = connection.scan(
+                    ScanOptions.scanOptions().match(pattern).count(200).build())) {
+                while (cursor.hasNext()) {
+                    keys.add(new String(cursor.next(), StandardCharsets.UTF_8));
+                }
+            }
+            return null;
+        });
+        return keys;
     }
 }

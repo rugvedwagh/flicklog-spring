@@ -44,11 +44,21 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest,
                                               HttpServletResponse httpResponse) {
-        AuthResult result = authService.login(request, httpRequest.getHeader("User-Agent"));
+        AuthResult result = authService.login(request, httpRequest.getHeader("User-Agent"), resolveClientIp(httpRequest));
         setRefreshTokenCookie(httpResponse, result.getRefreshToken());
 
         return ResponseEntity.ok(new AuthResponse(
                 result.getUser(), result.getAccessToken(), result.getCsrfToken(), result.getSessionId()));
+    }
+
+    // Render (and most PaaS/load-balanced setups) sit behind a proxy, so the real
+// client IP arrives via X-Forwarded-For rather than the raw socket address.
+    private String resolveClientIp(HttpServletRequest request) {
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (forwardedFor != null && !forwardedFor.isBlank()) {
+            return forwardedFor.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     @PostMapping("/refresh-token/secure")

@@ -34,6 +34,11 @@ public class UserService {
             throw new ApiException("Unauthorized action", 403);
         }
 
+        if (!requesterUserId.equals(id)) {
+            log.warn("Update rejected: requester {} attempted to update user {}", requesterUserId, id);
+            throw new ApiException("You can only update your own account", 403);
+        }
+
         User user = userRepository.findById(id)
                 .orElseThrow(() -> {
                     log.warn("Update failed: user not found for id {}", id);

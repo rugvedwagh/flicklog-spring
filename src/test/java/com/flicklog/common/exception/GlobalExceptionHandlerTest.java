@@ -82,6 +82,7 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getStack()).isNotNull();
     }
 
+    // UPDATED: prod must now return a generic message, not the raw exception message
     @Test
     void handleGeneric_prodProfile_omitsStackTrace() {
         MockEnvironment env = new MockEnvironment();
@@ -93,6 +94,23 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response = handler.handleGeneric(ex);
 
         assertThat(response.getBody().getStack()).isNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Internal Server Error");
+    }
+
+    // NEW: regression test for the message-leak fix specifically
+    @Test
+    void handleGeneric_prodProfile_neverLeaksRawExceptionMessage() {
+        MockEnvironment env = new MockEnvironment();
+        env.setActiveProfiles("prod");
+        GlobalExceptionHandler handler = new GlobalExceptionHandler(env);
+
+        RuntimeException ex = new RuntimeException("Connection refused: connect flicklog-mongo:27017");
+
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response = handler.handleGeneric(ex);
+
+        assertThat(response.getBody().getMessage())
+                .isEqualTo("Internal Server Error")
+                .doesNotContain("flicklog-mongo");
     }
 
     @Test

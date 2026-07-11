@@ -7,7 +7,4 @@ import lombok.Data;
 public class BookmarkRequest {
     @NotBlank(message = "Post ID is required")
     private String postId;
-
-    @NotBlank(message = "User ID is required")
-    private String userId;
 }

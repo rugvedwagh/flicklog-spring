@@ -63,7 +63,7 @@ class AuthServiceTest {
         when(userRepository.save(any())).thenReturn(existingUser);
         when(jwtProperties.getRefreshExpiryDays()).thenReturn(7L);
 
-        AuthResult result = authService.login(request, "test-agent");
+        AuthResult result = authService.login(request, "test-agent", "127.0.0.1");
 
         assertThat(result.getAccessToken()).isEqualTo("access-token");
         assertThat(result.getCsrfToken()).isEqualTo("csrf-token");
@@ -79,7 +79,7 @@ class AuthServiceTest {
         when(userRepository.findByEmail("test@example.com")).thenReturn(Optional.of(existingUser));
         when(passwordEncoder.matches("wrongpass", "hashed-password")).thenReturn(false);
 
-        assertThatThrownBy(() -> authService.login(request, "test-agent"))
+        assertThatThrownBy(() -> authService.login(request, "test-agent", "127.0.0.1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Incorrect password");
     }
@@ -92,7 +92,7 @@ class AuthServiceTest {
 
         when(userRepository.findByEmail("ghost@example.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> authService.login(request, "test-agent"))
+        assertThatThrownBy(() -> authService.login(request, "test-agent", "127.0.0.1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("User not found");
     }
@@ -227,7 +227,7 @@ class AuthServiceTest {
         when(jwtTokenService.generateAccessToken(existingUser)).thenReturn("new-access");
         when(jwtProperties.getRefreshExpiryDays()).thenReturn(7L);
 
-        authService.login(request, "some-agent");
+        authService.login(request, "some-agent", "127.0.0.1");
 
         assertThat(existingUser.getSessions())
                 .extracting(Session::getSessionId)
@@ -237,16 +237,36 @@ class AuthServiceTest {
     }
 
     @Test
-    void login_withTooManyFailedAttempts_throws429() {
+    void login_withTooManyFailedEmailAttempts_throws429() {
         for (int i = 0; i < 5; i++) {
-            loginRateLimiter.recordFailure("test@example.com");
+            loginRateLimiter.recordFailure("email:test@example.com");
         }
 
         LoginRequest request = new LoginRequest();
         request.setEmail("test@example.com");
         request.setPassword("password123");
 
-        assertThatThrownBy(() -> authService.login(request, "test-agent"))
+        assertThatThrownBy(() -> authService.login(request, "test-agent", "127.0.0.1"))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Too many failed login attempts. Please try again later.");
+
+        verifyNoInteractions(userRepository, passwordEncoder);
+    }
+
+    // Regression test for the gap we just closed: spraying low-volume guesses
+// across many different emails from one IP should now trip the IP-based
+// limiter, even though no single email individually hit its own threshold.
+    @Test
+    void login_withTooManyFailedAttemptsFromSameIp_acrossDifferentEmails_throws429() {
+        for (int i = 0; i < 5; i++) {
+            loginRateLimiter.recordFailure("ip:203.0.113.7");
+        }
+
+        LoginRequest request = new LoginRequest();
+        request.setEmail("someone-not-tried-before@example.com");
+        request.setPassword("password123");
+
+        assertThatThrownBy(() -> authService.login(request, "test-agent", "203.0.113.7"))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Too many failed login attempts. Please try again later.");
 

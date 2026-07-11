@@ -53,13 +53,16 @@ public class PostController {
 
     @PatchMapping(value = "/{id}", consumes = "multipart/form-data")
     public Post updatePost(@PathVariable String id, @Valid @ModelAttribute PostRequest request,
-                           @RequestParam(value = "selectedfile", required = false) MultipartFile file) {
-        return postService.updatePost(id, request, file);
+                           @RequestParam(value = "selectedfile", required = false) MultipartFile file,
+                           HttpServletRequest httpRequest) {
+        String requesterId = (String) httpRequest.getAttribute("userId");
+        return postService.updatePost(id, request, file, requesterId);
     }
 
     @DeleteMapping("/{id}")
-    public Map<String, String> deletePost(@PathVariable String id) {
-        postService.deletePost(id);
+    public Map<String, String> deletePost(@PathVariable String id, HttpServletRequest httpRequest) {
+        String requesterId = (String) httpRequest.getAttribute("userId");
+        postService.deletePost(id, requesterId);
         return Map.of("message", "Post deleted successfully!");
     }
 
@@ -70,12 +73,16 @@ public class PostController {
     }
 
     @PostMapping("/{id}/commentPost")
-    public Post commentPost(@PathVariable String id, @Valid @RequestBody CommentRequest request) {
-        return postService.commentPost(id, request.getValue());
+    public Post commentPost(@PathVariable String id, @Valid @RequestBody CommentRequest request,
+                            HttpServletRequest httpRequest) {
+        String authorId = (String) httpRequest.getAttribute("userId");
+        return postService.commentPost(id, request.getValue(), authorId);
     }
 
     @PostMapping("/bookmarks/add")
-    public Map<String, List<String>> bookmarkPost(@Valid @RequestBody BookmarkRequest request) {
-        return Map.of("updatedBookmarks", postService.bookmarkPost(request.getPostId(), request.getUserId()));
+    public Map<String, List<String>> bookmarkPost(@Valid @RequestBody BookmarkRequest request,
+                                                  HttpServletRequest httpRequest) {
+        String requesterId = (String) httpRequest.getAttribute("userId");
+        return Map.of("updatedBookmarks", postService.bookmarkPost(request.getPostId(), requesterId));
     }
 }

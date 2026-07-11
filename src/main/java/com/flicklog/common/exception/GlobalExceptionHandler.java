@@ -84,10 +84,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
         log.error("Unhandled exception reached the global handler", ex);
 
-        ErrorResponse body = new ErrorResponse();
-        body.setMessage(ex.getMessage() != null ? ex.getMessage() : "Internal Server Error");
-
         boolean isProduction = env.acceptsProfiles(org.springframework.core.env.Profiles.of("prod"));
+
+        ErrorResponse body = new ErrorResponse();
+        body.setMessage(isProduction
+                ? "Internal Server Error"
+                : (ex.getMessage() != null ? ex.getMessage() : "Internal Server Error"));
+
         if (!isProduction) {
             body.setStack(Arrays.stream(ex.getStackTrace())
                     .map(StackTraceElement::toString)
