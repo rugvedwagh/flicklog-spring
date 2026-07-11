@@ -98,6 +98,22 @@ class UserServiceTest {
         assertThat(result.getName()).isEqualTo("Updated Name");
         assertThat(result.getEmail()).isEqualTo("updated@example.com");
         verify(userRepository).save(existingUser);
+        verify(redisCacheService).delete("user:" + VALID_ID);
+    }
+
+    @Test
+    void updateUser_withAnExistingEmail_throws400() {
+        UpdateUserRequest request = new UpdateUserRequest();
+        request.setEmail("taken@example.com");
+
+        when(userRepository.findById(VALID_ID)).thenReturn(Optional.of(existingUser));
+        when(userRepository.existsByEmail("taken@example.com")).thenReturn(true);
+
+        assertThatThrownBy(() -> userService.updateUser(VALID_ID, VALID_ID, request))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Email is already in use");
+
+        verify(userRepository, never()).save(any());
     }
 
     // --- fetchUserData ---

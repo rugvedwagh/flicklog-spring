@@ -298,7 +298,7 @@ class PostServiceTest {
         assertThat(result.getTitle()).isEqualTo("Updated title");
         assertThat(result.getTags()).containsExactly("newtag");
         verify(cloudinaryService, never()).destroy(any());
-        verify(redisCacheService).delete("post:" + postId);
+        verify(redisCacheService).deleteByPattern("post:*");
         verify(redisCacheService).deleteByPattern("posts:*");
     }
 
@@ -338,7 +338,7 @@ class PostServiceTest {
 
         verify(cloudinaryService).destroy("public-id-123");
         verify(postRepository).deleteById(postId);
-        verify(redisCacheService).delete("post:" + postId);
+        verify(redisCacheService).deleteByPattern("post:*");
         verify(redisCacheService).deleteByPattern("posts:*");
     }
 
@@ -366,7 +366,7 @@ class PostServiceTest {
         postService.deletePost(postId, ownerId);
 
         verify(postRepository).deleteById(postId);
-        verify(redisCacheService).delete("post:" + postId);
+        verify(redisCacheService).deleteByPattern("post:*");
         verify(redisCacheService).deleteByPattern("posts:*");
     }
 
@@ -388,7 +388,7 @@ class PostServiceTest {
         assertThat(result.getComments()).hasSize(1);
         assertThat(result.getComments().get(0).getValue()).isEqualTo("Great post!");
         assertThat(result.getComments().get(0).getAuthorId()).isEqualTo(ownerId);
-        verify(redisCacheService).delete("post:" + postId);
+        verify(redisCacheService).deleteByPattern("post:*");
     }
 
     @Test

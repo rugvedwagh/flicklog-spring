@@ -10,6 +10,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.bson.types.ObjectId;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
+
 /**
  * Mirrors controllers/user.controllers.js.
  */
@@ -46,10 +48,18 @@ public class UserService {
                 });
 
         if (request.getName() != null) user.setName(request.getName());
-        if (request.getEmail() != null) user.setEmail(request.getEmail());
+        if (request.getEmail() != null) {
+            String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
+            if (!email.equals(user.getEmail()) && userRepository.existsByEmail(email)) {
+                throw new ApiException("Email is already in use", 400);
+            }
+            user.setEmail(email);
+        }
 
         log.info("User {} updated by requester {}", id, requesterUserId);
-        return userRepository.save(user);
+        User updated = userRepository.save(user);
+        redisCacheService.delete("user:" + id);
+        return updated;
     }
 
     public User fetchUserData(String id) {

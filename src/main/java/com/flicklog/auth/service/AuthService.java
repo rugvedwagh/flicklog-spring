@@ -19,7 +19,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Mirrors controllers/auth.controllers.js.
@@ -29,11 +32,14 @@ import java.util.UUID;
 @Service
 public class AuthService {
 
+    private static final Duration REFRESH_REPLAY_GRACE = Duration.ofSeconds(5);
+
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
     private final JwtProperties jwtProperties;
     private final LoginRateLimiter loginRateLimiter;
+    private final ConcurrentHashMap<String, ReentrantLock> refreshLocks = new ConcurrentHashMap<>();
 
     public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder,
                        JwtTokenService jwtTokenService, JwtProperties jwtProperties, LoginRateLimiter loginRateLimiter) {
@@ -45,7 +51,8 @@ public class AuthService {
     }
 
     public AuthResult login(LoginRequest request, String userAgent, String ipAddress) {
-        String emailKey = "email:" + request.getEmail().toLowerCase();
+        String email = normalizeEmail(request.getEmail());
+        String emailKey = "email:" + email;
         String ipKey = "ip:" + ipAddress;
 
         if (loginRateLimiter.isBlocked(emailKey) || loginRateLimiter.isBlocked(ipKey)) {
@@ -53,19 +60,19 @@ public class AuthService {
             throw new ApiException(429, "Too many failed login attempts. Please try again later.");
         }
 
-        User user = userRepository.findByEmail(request.getEmail())
+        User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> {
                     loginRateLimiter.recordFailure(emailKey);
                     loginRateLimiter.recordFailure(ipKey);
                     log.warn("Login failed: no user found for email {}", request.getEmail());
-                    return new ApiException("User not found", 404);
+                    return new ApiException(401, "Invalid email or password");
                 });
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             loginRateLimiter.recordFailure(emailKey);
             loginRateLimiter.recordFailure(ipKey);
             log.warn("Login failed: incorrect password for user {}", user.getId());
-            throw new ApiException("Incorrect password", 400);
+            throw new ApiException(401, "Invalid email or password");
         }
 
         loginRateLimiter.reset(emailKey);
@@ -82,8 +89,9 @@ public class AuthService {
         if (request.getPassword().length() < 4) {
             throw new ApiException("Password must be at least 4 characters long", 400);
         }
-        if (userRepository.findByEmail(request.getEmail()).isPresent()) {
-            log.warn("Registration failed: email {} already in use", request.getEmail());
+        String email = normalizeEmail(request.getEmail());
+        if (userRepository.findByEmail(email).isPresent()) {
+            log.warn("Registration failed: email {} already in use", email);
             throw new ApiException("Email is already in use", 400);
         }
         if (!request.getPassword().equals(request.getConfirmPassword())) {
@@ -91,7 +99,7 @@ public class AuthService {
         }
 
         User newUser = new User();
-        newUser.setEmail(request.getEmail());
+        newUser.setEmail(email);
         newUser.setPassword(passwordEncoder.encode(request.getPassword()));
         newUser.setName(request.getFirstName() + " " + request.getLastName());
 
@@ -150,38 +158,52 @@ public class AuthService {
             throw new ApiException(401, "Invalid or expired refresh token");
         }
 
-        User user = userRepository.findById(claims.get("id", String.class))
-                .orElseThrow(() -> new ApiException(404, "User not found"));
+        String userId = claims.get("id", String.class);
+        String lockKey = userId + ":" + sessionId;
+        ReentrantLock lock = refreshLocks.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
+            User user = userRepository.findById(userId)
+                    .orElseThrow(() -> new ApiException(404, "User not found"));
 
-        pruneExpiredSessions(user);
+            pruneExpiredSessions(user);
 
-        Session session = user.getSessions().stream()
-                .filter(s -> s.getSessionId().equals(sessionId))
-                .findFirst()
-                .orElse(null);
+            Session session = user.getSessions().stream()
+                    .filter(s -> s.getSessionId().equals(sessionId))
+                    .findFirst()
+                    .orElse(null);
 
-        if (session == null) {
-            log.warn("Refresh rejected: no session {} for user {}", sessionId, user.getId());
-            throw new ApiException(403, "Session not found or refresh token is invalid");
-        }
+            if (session == null) {
+                log.warn("Refresh rejected: no session {} for user {}", sessionId, user.getId());
+                throw new ApiException(403, "Session not found or refresh token is invalid");
+            }
 
-        if (!constantTimeEquals(session.getRefreshToken(), refreshToken)) {
-            // The token's signature/expiry are valid, but it doesn't match what's
-            // currently stored for this session - it was already rotated out.
-            // Treat this as likely theft/replay: nuke every session for this user.
-            log.warn("Refresh token reuse detected for user {} (session {}) - revoking all sessions", user.getId(), sessionId);
-            user.setSessions(new java.util.ArrayList<>());
+            if (!constantTimeEquals(session.getRefreshToken(), refreshToken)) {
+                if (isGraceRefresh(session, refreshToken)) {
+                    return new RefreshResult(jwtTokenService.generateAccessToken(user), session.getRefreshToken());
+                }
+
+                log.warn("Refresh token reuse detected for user {} (session {}) - revoking all sessions", user.getId(), sessionId);
+                user.setSessions(new ArrayList<>());
+                userRepository.save(user);
+                throw new ApiException(403, "Session invalidated due to suspected token reuse. Please log in again.");
+            }
+
+            String newRefreshToken = jwtTokenService.generateRefreshToken(user);
+            String newAccessToken = jwtTokenService.generateAccessToken(user);
+            session.setPreviousRefreshToken(refreshToken);
+            session.setPreviousRefreshValidUntil(Instant.now().plus(REFRESH_REPLAY_GRACE));
+            session.setRefreshToken(newRefreshToken);
             userRepository.save(user);
-            throw new ApiException(403, "Session invalidated due to suspected token reuse. Please log in again.");
+
+            log.info("Access token refreshed for user {} (session {})", user.getId(), sessionId);
+            return new RefreshResult(newAccessToken, newRefreshToken);
+        } finally {
+            lock.unlock();
+            if (!lock.hasQueuedThreads()) {
+                refreshLocks.remove(lockKey, lock);
+            }
         }
-
-        String newRefreshToken = jwtTokenService.generateRefreshToken(user);
-        String newAccessToken = jwtTokenService.generateAccessToken(user);
-        session.setRefreshToken(newRefreshToken);
-        userRepository.save(user);
-
-        log.info("Access token refreshed for user {} (session {})", user.getId(), sessionId);
-        return new RefreshResult(newAccessToken, newRefreshToken);
     }
 
     // Mirrors middleware/csrf.middleware.js's verifyCsrfToken, run before refreshAccessToken
@@ -204,7 +226,7 @@ public class AuthService {
 
         boolean valid = user.getSessions().stream()
                 .anyMatch(s -> s.getSessionId().equals(sessionId)
-                        && constantTimeEquals(s.getRefreshToken(), refreshToken)
+                        && (constantTimeEquals(s.getRefreshToken(), refreshToken) || isGraceRefresh(s, refreshToken))
                         && constantTimeEquals(s.getCsrfToken(), csrfToken));
 
         if (!valid) {
@@ -230,6 +252,16 @@ public class AuthService {
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean isGraceRefresh(Session session, String refreshToken) {
+        return session.getPreviousRefreshValidUntil() != null
+                && Instant.now().isBefore(session.getPreviousRefreshValidUntil())
+                && constantTimeEquals(session.getPreviousRefreshToken(), refreshToken);
     }
 
     // Plain String.equals() short-circuits on the first mismatched character,

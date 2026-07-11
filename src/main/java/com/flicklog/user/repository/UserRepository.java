@@ -9,6 +9,8 @@ public interface UserRepository extends MongoRepository<User, String> {
 
     Optional<User> findByEmail(String email);
 
+    boolean existsByEmail(String email);
+
     // Backs the csrf middleware's User.findOne({ "sessions.sessionId": sessionId })
     Optional<User> findBySessions_SessionId(String sessionId);
 }

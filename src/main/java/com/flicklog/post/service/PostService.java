@@ -149,7 +149,7 @@ public class PostService {
         }
 
         Post saved = postRepository.save(post);
-        redisCacheService.deleteByPattern("posts:*");
+        invalidatePostCaches();
         log.info("Post {} created by user {}", saved.getId(), creatorId);
         return saved;
     }
@@ -189,8 +189,7 @@ public class PostService {
 
         Post updated = postRepository.save(existing);
 
-        redisCacheService.delete("post:" + id);
-        redisCacheService.deleteByPattern("posts:*");
+        invalidatePostCaches();
         log.info("Post {} updated by {}", id, requesterId);
 
         return updated;
@@ -221,8 +220,7 @@ public class PostService {
 
         postRepository.deleteById(id);
 
-        redisCacheService.delete("post:" + id);
-        redisCacheService.deleteByPattern("posts:*");
+        invalidatePostCaches();
         log.info("Post {} deleted by {}", id, requesterId);
     }
 
@@ -243,6 +241,7 @@ public class PostService {
 
         if (result != null) {
             log.info("User {} unliked post {}", userId, id);
+            invalidatePostCaches();
             return result;
         }
 
@@ -260,6 +259,7 @@ public class PostService {
         }
 
         log.info("User {} liked post {}", userId, id);
+        invalidatePostCaches();
         return result;
     }
 
@@ -286,7 +286,7 @@ public class PostService {
         }
 
         log.info("Comment added to post {} by {}", id, authorId);
-        redisCacheService.delete("post:" + id);
+        invalidatePostCaches();
         return result;
     }
 
@@ -302,6 +302,7 @@ public class PostService {
                 pullQuery, pullUpdate, FindAndModifyOptions.options().returnNew(true), User.class);
 
         if (result != null) {
+            redisCacheService.delete("user:" + userId);
             return result.getBookmarks();
         }
 
@@ -310,6 +311,10 @@ public class PostService {
         result = mongoTemplate.findAndModify(
                 addQuery, addUpdate, FindAndModifyOptions.options().returnNew(true), User.class);
 
+        if (result == null) {
+            throw new ApiException("User not found", 404);
+        }
+        redisCacheService.delete("user:" + userId);
         return result.getBookmarks();
     }
 
@@ -336,5 +341,10 @@ public class PostService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private void invalidatePostCaches() {
+        redisCacheService.deleteByPattern("post:*");
+        redisCacheService.deleteByPattern("posts:*");
     }
 }

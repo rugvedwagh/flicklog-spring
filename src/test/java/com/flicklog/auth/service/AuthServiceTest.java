@@ -71,7 +71,7 @@ class AuthServiceTest {
     }
 
     @Test
-    void login_withWrongPassword_throws400() {
+    void login_withWrongPassword_returnsGeneric401() {
         LoginRequest request = new LoginRequest();
         request.setEmail("test@example.com");
         request.setPassword("wrongpass");
@@ -81,11 +81,11 @@ class AuthServiceTest {
 
         assertThatThrownBy(() -> authService.login(request, "test-agent", "127.0.0.1"))
                 .isInstanceOf(ApiException.class)
-                .hasMessage("Incorrect password");
+                .hasMessage("Invalid email or password");
     }
 
     @Test
-    void login_withUnknownEmail_throws404() {
+    void login_withUnknownEmail_returnsTheSameGeneric401() {
         LoginRequest request = new LoginRequest();
         request.setEmail("ghost@example.com");
         request.setPassword("password123");
@@ -94,7 +94,7 @@ class AuthServiceTest {
 
         assertThatThrownBy(() -> authService.login(request, "test-agent", "127.0.0.1"))
                 .isInstanceOf(ApiException.class)
-                .hasMessage("User not found");
+                .hasMessage("Invalid email or password");
     }
 
     @Test
@@ -186,6 +186,42 @@ class AuthServiceTest {
                 .hasMessageContaining("suspected token reuse");
 
         assertThat(existingUser.getSessions()).isEmpty(); // both sessions wiped, not just session-1
+    }
+
+    @Test
+    void refreshAccessToken_withJustRotatedToken_returnsCurrentTokenWithoutRevokingSessions() {
+        Session session = new Session("csrf-tok", "current-refresh-token", "session-1", "some-agent", java.time.Instant.now());
+        session.setPreviousRefreshToken("just-rotated-token");
+        session.setPreviousRefreshValidUntil(java.time.Instant.now().plusSeconds(5));
+        existingUser.getSessions().add(session);
+
+        Claims claims = mock(Claims.class);
+        when(claims.get("id", String.class)).thenReturn(existingUser.getId());
+        when(jwtTokenService.verifyRefreshToken("just-rotated-token")).thenReturn(claims);
+        when(userRepository.findById(existingUser.getId())).thenReturn(Optional.of(existingUser));
+        when(jwtTokenService.generateAccessToken(existingUser)).thenReturn("replacement-access-token");
+        when(jwtProperties.getRefreshExpiryDays()).thenReturn(7L);
+
+        RefreshResult result = authService.refreshAccessToken("just-rotated-token", "session-1");
+
+        assertThat(result.getRefreshToken()).isEqualTo("current-refresh-token");
+        assertThat(existingUser.getSessions()).hasSize(1);
+        verify(userRepository, never()).save(existingUser);
+    }
+
+    @Test
+    void verifyCsrf_allowsTheBriefRefreshRotationOverlap() {
+        Session session = new Session("csrf-tok", "current-refresh-token", "session-1", "some-agent", java.time.Instant.now());
+        session.setPreviousRefreshToken("just-rotated-token");
+        session.setPreviousRefreshValidUntil(java.time.Instant.now().plusSeconds(5));
+        existingUser.getSessions().add(session);
+
+        Claims claims = mock(Claims.class);
+        when(claims.get("id", String.class)).thenReturn(existingUser.getId());
+        when(jwtTokenService.verifyRefreshToken("just-rotated-token")).thenReturn(claims);
+        when(userRepository.findById(existingUser.getId())).thenReturn(Optional.of(existingUser));
+
+        authService.verifyCsrf("just-rotated-token", "session-1", "csrf-tok");
     }
 
     @Test
