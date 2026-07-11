@@ -305,6 +305,15 @@ class PostServiceTest {
     // --- deletePost ---
 
     @Test
+    void deletePost_nullRequester_throws401() {
+        assertThatThrownBy(() -> postService.deletePost(postId, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Unauthorized action");
+
+        verifyNoInteractions(postRepository);
+    }
+
+    @Test
     void deletePost_withInvalidId_throws400() {
         assertThatThrownBy(() -> postService.deletePost("not-an-id", ownerId))
                 .isInstanceOf(ApiException.class)
